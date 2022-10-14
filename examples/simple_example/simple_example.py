@@ -37,7 +37,7 @@ if __name__ == "__main__":
     mlp = MLP(
         [4,10,3,1],
         optimizer='Nadam',
-        activation=['hard_sigmoid','tanh','sigmoid','softsign'],
+        activation=['hard_sigmoid','tanh','sigmoid','sigmoid'],
         initializer=['normal','normal','normal'],
         init_params=[[0,1,0],[0,1,1],[0,1,5]]
     )
@@ -49,7 +49,7 @@ if __name__ == "__main__":
     mlp.train(
         data[0],
         data[1],
-        num_epochs=100,
+        num_epochs=20,
         batch=25,
         verbose=True
     )
