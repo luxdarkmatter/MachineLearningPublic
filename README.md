@@ -105,6 +105,42 @@ mlp.save_results_to_file(   # save the results to file.
 )
 ```
 
+## Uniform ML Transformation
+To ease the PLR algorithm, we apply a uniform transformation to the neural network output so that the distribution over the output variable is uniform.  This makes it easier for the PLR to vary bin contents, since each bin has the same integral area.  To use this functionality, you need to pass both the signal file and background file, as well as the trained network parameters to the "find_ML_transform" function, which has the following arguments:
+```python
+def find_ML_transform(
+    exp_folder: str,                 # folder to store the results
+    signal: str,                     # input file for signal (either root or npz)
+    background: str,                 # input file for background (either root or npz)
+    background_files: List[str],     # input files for separate background components
+    filetype: str='ROOT',            # filetype (either 'ROOT' or 'npz')
+    treename: str='summary',         # name of the TTree if ROOT format
+    input_names: List[str]=[''],     # names of the variables to be used
+    swap_order: List[int]=[],        # order to put the variables in if network takes different order
+    weighted: bool='False',          # whether their is a weight variable in the ROOT file
+    model_file: str='',              # location of the model file
+    mass: str=''                     # mass of the signal
+):
+```
+Once the uniform trannsformation parameters are found, they can be applied to any input data, provided that the data is normalized correctly for the netowrk.  This can be done with the "apply_ML_transform" function, which has the following arguments:
+```python
+def apply_ML_transform(
+    exp_folder: str,                 # folder to store the results
+    filename: str,                   # input file (either root or npz)
+    filetype: str='ROOT',            # filetype (either 'ROOT' or 'npz')
+    treename: str='summary',         # name of the TTree if ROOT format
+    input_names: List[str]=[''],     # names of the variables to be used
+    output_name: str='',             # name of the output variable to be used
+    swap_order: List[int]=[],        # order to put the variables in if network takes different order
+    weighted: bool='False',          # whether their is a weight variable in the ROOT file
+    model_file: str='',              # location of the model file
+    output_file: str='',             # where you want the output to go,
+    make_output_uniform: bool=False, # whether to turn the output info uniform from 1/2 sig and 1/2 bkg
+    interp_fname_label: str=''       # file name for uniform transformation
+) -> None:
+```
+An example usage is shown in the simple_example script.
+
 ## Transfer Learning
 
 The script *lux_ml.subsets_mi* contains a complex wrapper for creating and running a MLP model on data which it splits into subsets and calculates mutual information to use as a benchmark for training.  The method which does this has the following arguments:
