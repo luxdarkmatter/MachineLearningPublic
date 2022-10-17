@@ -731,3 +731,477 @@ def generate_model(
     #with open(exp_folder+model_folder+"output.txt","w") as file:
     #    file.write(output_txt)   
 #---------------------------------------------------------------------------------------------------------------
+
+#---------------------------------------------------------------------------------------------------------------
+# function for applying neural network transformation from a model
+# and saving it in a root file
+#---------------------------------------------------------------------------------------------------------------
+def apply_ML_transform_all(
+    exp_folder: str,                 # folder to store the results
+    signal: str,                     # input file for signal (either root or npz)
+    background: str,                 # input file for background (either root or npz)
+    background_files: List[str],     # input files for separate background components
+    search_data: str,                # input file for the data (root)
+    filetype: str='ROOT',            # filetype (either 'ROOT' or 'npz')
+    treename: str='summary',         # name of the TTree if ROOT format
+    input_names: List[str]=[''],     # names of the variables to be used
+    output_name: str='',             # name of the output variable to be used
+    swap_order: List[int]=[],        # order to put the variables in if network takes different order
+    weighted: bool='False',          # whether their is a weight variable in the ROOT file
+    model_file: str='',              # location of the model file
+    signal_output_file: str='',      # where you want the signal output to go
+    background_output_file: str='',  # where you want the background output to go
+    search_data_output_file: str='', # where you want the search data output to go
+    background_files_output: List[str]=[''],
+    make_output_uniform: bool=False, # whether to turn the output info uniform from 1/2 sig and 1/2 bkg
+    interp_fname_label: str='',      # file name for uniform transformation
+    component_names: List[str] = [], # list of background file names
+    mass: str=''                     # mass of the signal
+) -> None:
+    assert (filetype == 'ROOT' or filetype == 'npz'), print("Invalid filetype! Must be either 'ROOT' or 'npz'.")
+    assert ('weight' not in input_names), print("Please do not include 'weight' in input_names! Mark 'weighted' as True instead!")
+    if len(swap_order) == 0:
+        swap_order = [i for i in range(len(input_names))]
+    make_folder(exp_folder)
+    data_test=[]
+    answer=[]
+    # collect signal data first
+    #----------------------------------------------------------------------------------------------------------------------
+    signal_data_dict = {}
+    # if weighted, append 'weight' to the input names
+    if weighted:
+        input_names.append('weight')
+    # Import the data
+    if filetype == 'ROOT':
+        rootfile = uproot.open(signal)
+        # Extract variables
+        for input_name in input_names:
+            signal_data_dict[input_name] = rootfile[treename][input_name].array()
+    elif filetype == 'npz':
+        data = np.load(signal)['arr_0']
+        # Extract variables
+        print(input_names)
+        for ii, input_name in enumerate(input_names):
+            signal_data_dict[input_name] = data[:,ii]
+    else:
+        print("Invalid filetype!")
+        return
+    # Put data in desired format
+    signal_test=[]
+    signal_weight=[]
+    for j in range(len(signal_data_dict[input_names[0]])):
+        point = [signal_data_dict[input_name][j] for input_name in input_names]
+        point_ordered = [point[j] for j in swap_order] # to account for the order of vars from the network not matching the order in the input_names list
+        signal_test.append(point_ordered)
+        if weighted:
+            signal_weight.append(signal_data_dict['weight'][j])
+    # testing data should NOT be normalized (evaluate() does the normalization)
+    # testing answer is only relevant if score_output=True; just assume background
+    signal_answers=[[1]]*len(signal_test) # +1 for sig, -1 for bkg
+    print("Done loading in data from '{0}' with {1} events".format(signal,len(signal_test)))
+    #----------------------------------------------------------------------------------------------------------------------
+    # collect background data
+    #----------------------------------------------------------------------------------------------------------------------
+    background_data_dict = {}
+    # if weighted, append 'weight' to the input names 
+    # Import the data
+    if filetype == 'ROOT':
+        rootfile = uproot.open(background)
+        # Extract variables
+        for input_name in input_names:
+            background_data_dict[input_name] = rootfile[treename][input_name].array()
+    elif filetype == 'npz':
+        data = np.load(background)['arr_0']
+        # Extract variables
+        print(input_names)
+        for ii, input_name in enumerate(input_names):
+            background_data_dict[input_name] = data[:,ii]
+    else:
+        print("Invalid filetype!")
+        return
+    # Put data in desired format
+    background_test=[]
+    background_weight=[]
+    for j in range(len(background_data_dict[input_names[0]])):
+        point = [background_data_dict[input_name][j] for input_name in input_names]
+        point_ordered = [point[j] for j in swap_order] # to account for the order of vars from the network not matching the order in the input_names list
+        background_test.append(point_ordered)
+        if weighted:
+            background_weight.append(background_data_dict['weight'][j])
+    # testing data should NOT be normalized (evaluate() does the normalization)
+    # testing answer is only relevant if score_output=True; just assume background
+    background_answers=[[-1]]*len(background_test) # +1 for sig, -1 for bkg
+    print("Done loading in data from '{0}' with {1} events".format(background,len(background_test)))
+    #----------------------------------------------------------------------------------------------------------------------
+    # collect search data
+    #----------------------------------------------------------------------------------------------------------------------
+    search_data_dict = {}
+    rootfile = uproot.open(search_data)
+    # extract variables
+    for input_name in input_names:
+        search_data_dict[input_name] = rootfile[treename][input_name].array()
+    search_data_test = []
+    for j in range(len(search_data_dict[input_names[0]])):
+        point = [search_data_dict[input_name][j] for input_name in input_names]
+        point_ordered = [point[j] for j in swap_order]
+        search_data_test.append(point_ordered)
+    print("Done loading in data from '{0}' with {1} events".format(search_data,len(search_data_test)))
+    search_data_answers = [[0]]*len(search_data_test)
+    #----------------------------------------------------------------------------------------------------------------------
+    # collect individual background components
+    #----------------------------------------------------------------------------------------------------------------------
+    background_component_data_test = []
+    background_component_answers = []
+    background_component_dicts = []
+    background_component_weights = []
+    for temp_file in background_files:
+        temp_data_dict = {}
+        temp_weights = []
+        rootfile = uproot.open(temp_file)
+        for input_name in input_names:
+            temp_data_dict[input_name] = rootfile[treename][input_name].array()
+        background_component_dicts.append(temp_data_dict)
+        temp_data_test = []
+        for j in range(len(temp_data_dict[input_names[0]])):
+            point = [temp_data_dict[input_name][j] for input_name in input_names]
+            point_ordered = [point[j] for j in swap_order]
+            temp_data_test.append(point_ordered)
+            if weighted:
+                temp_weights.append(temp_data_dict['weight'][j])
+        background_component_weights.append(temp_weights)
+        print("Done loading in data from '{0}' with {1} events".format(temp_file,len(temp_data_test)))
+        background_component_data_test.append(temp_data_test)
+        temp_answers = [[-1]]*len(temp_data_test)
+        background_component_answers.append(temp_answers)
+    #----------------------------------------------------------------------------------------------------------------------
+    data_test = np.concatenate((signal_test,background_test))
+    answer = np.concatenate((signal_answers,background_answers))
+    # apply normalization
+    print("Normalizing input data")
+    means = np.mean(data_test,axis=0)
+    stds = np.std(data_test,axis=0)
+    print("    Norm params:  mean,    std dev")
+    for l in range(len(means)):
+        print("      var %s):    %s,  %s" % (l,means[l],stds[l]))
+    data_test = (data_test - means)/stds
+    search_data_test = (search_data_test - means)/stds
+    for k in range(len(background_component_data_test)):
+        background_component_data_test[k] = (background_component_data_test[k] - means)/stds
+    # Note: data_dict is already in the desired format for uproot! (branch name matches input name)
+    mlp = MLP(filename=model_file+'model_after.csv') # load model directly from file
+    print("Successfully loaded model from file '{}'.".format(model_file))
+    # Now apply this network to the data
+    output=np.array(mlp.evaluate(data_test, testing_answer=answer, score_output=False)) # testing answer is only relevant if score_output=True
+    signal_output = [output[i][0] for i in range(len(output)) if answer[i]==1]
+    background_output = [output[i][0] for i in range(len(output)) if answer[i]!=1]
+    output = [output[i][0] for i in range(len(output))]
+    search_output=np.array(mlp.evaluate(search_data_test,testing_answer=search_data_answers,score_output=False))
+    search_output = [search_output[i][0] for i in range(len(search_output))]
+    component_outputs = []
+    for k in range(len(background_component_data_test)):
+        temp_output = np.array(mlp.evaluate(background_component_data_test[k],testing_answer=background_component_answers[k],score_output=False))
+        component_outputs.append([temp_output[i][0] for i in range(len(temp_output))])
+        print("Added {}th-component {} with {} events".format(k,background_files[k],len(component_outputs[-1])))
+    #output = output.flatten() # Convert to a 1D array
+    # build histogram outputs
+    print("Number of background components: {}".format(len(component_outputs)))
+    for k in range(len(component_outputs)):
+        print("Background component {} output example:".format(background_files[k]))
+        print(component_outputs[k][:5])
+    #signal_output = signal_output.flatten()
+    #background_output = background_output.flatten()
+    print("Applied model transformation.")
+    print("Copying model files to transformation directory")
+    copyfile(model_file+'history.png',exp_folder+'history.png')
+    copyfile(model_file+'output.txt',exp_folder+'output.txt')
+    copyfile(model_file+'roc.png',exp_folder+'roc.png')
+    copyfile(model_file+'stats.csv',exp_folder+'stats.csv')
+    copyfile(model_file+'model_after.csv',exp_folder+'model_after.csv')
+    copyfile(model_file+'training_stats.csv',exp_folder+'training_stats.csv')
+    copyfile(model_file+'validation_stats.csv',exp_folder+'validation_stats.csv')
+    print("Normalizing output...")
+    output_min = min(output)
+    output_max = max(output)
+    print("Min: {}, Max: {}, Scale: {}".format(output_min,output_max,output_max-output_min))
+    scale = output_max-output_min
+    output = [(output[i]-output_min)/scale for i in range(len(output))]
+    signal_output_raw = [signal_output[i] for i in range(len(signal_output))]
+    background_output_raw = [background_output[i] for i in range(len(background_output))]
+    component_outputs_raw = [[component_outputs[k][i] for i in range(len(component_outputs[k]))] for k in range(len(component_outputs))]
+    search_output_raw = [search_output[i] for i in range(len(search_output))]
+    signal_output = [(signal_output[i]-output_min)/scale for i in range(len(signal_output))]
+    background_output = [(background_output[i]-output_min)/scale for i in range(len(background_output))]
+    component_outputs = [[(component_outputs[k][i]-output_min)/scale for i in range(len(component_outputs[k]))] for k in range(len(component_outputs))]
+    search_output = [(search_output[i]-output_min)/scale for i in range(len(search_output))]
+    print("Output normalized.")
+    # Optional: transform output so that data that's 1/2 bkg, 1/2 sig is uniform in [0,1]
+    # requires text files of the CDF for 1/2 bkg, 1/2 sig for each NN output (created by GetMLTransformation.ipynb)
+    import matplotlib
+    matplotlib.rcParams.update({'font.size': 18})
+    if make_output_uniform:
+        transform = 'Uniform' #'Gaussian'
+        if weighted:
+            signal_weights = np.asarray(signal_weight)
+            background_weights = np.asarray(background_weight)
+        n_signal = np.size(signal_test)
+        n_background = np.size(background_test)
+        if weighted:
+            signal_weights = signal_weights/(2*np.sum(signal_weights))
+            background_weights = background_weights/(2*np.sum(background_weights))
+            background_component_weights = [background_component_weights[k]/(2*np.sum(background_weights)) for k in range(len(background_component_weights))]
+        else:
+            background_weights = np.ones(n_background)/(2*n_background)
+            signal_weights = np.ones(n_signal)/(2*n_signal)
+            background_component_weights = [np.ones(len(component_outputs[k]))/(2*n_background) for k in range(len(component_outputs))]
+        if weighted:
+            weights = np.concatenate((signal_weights,background_weights))
+        
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(signal_weights,bins=100,color='b',label='Signal',density=True,histtype='step',stacked=True,fill=False)
+        axs.set_xlabel('weights')
+        axs.set_yscale('log')
+        plt.title('{}GeV WIMP Signal Weights'.format(mass))
+        plt.legend()
+        plt.savefig(exp_folder+'signal_weights.png')
+        
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(background_weights,bins=100,color='r',label='Background',density=True,histtype='step',stacked=True,fill=False)
+        axs.set_xlabel('weights')
+        axs.set_yscale('log')
+        plt.title('{}GeV WIMP Background Weights'.format(mass))
+        plt.legend()
+        plt.savefig(exp_folder+'background_weights.png')
+
+        cdf_data = np.copy(output)
+        cdf_weights = np.copy(weights)
+        print("Creating uniform output...")
+        # Sort by NN value, to turn into a CDF
+        sort_ind = np.argsort(cdf_data)
+        cdf_data = cdf_data[sort_ind]
+        cdf_weights = cdf_weights[sort_ind]
+        print("sorted!")
+        # Get CDF by adding weights, after sorting
+        xx = cdf_data
+        distCDF_y = np.cumsum(cdf_weights)
+        distCDF_y = distCDF_y/distCDF_y[-1] # ensure normalization
+        #print(distCDF_y[:10])
+        # Sample CDF data only at ~n_interp points
+        n_pts = np.size(distCDF_y)
+        n_interp = n_pts # Should be somewhat larger than the desired final number of bins
+        interp_ind = np.arange(0,n_pts,int(n_pts/n_interp))
+        xx = xx[interp_ind]
+        distCDF_y = distCDF_y[interp_ind]
+        
+        # Add values just below and above range, to ensure any value in the valid range can be interpolated at
+        xx = np.concatenate(([-0.0001],xx,[1.0001]))
+        distCDF_x = xx
+        distCDF_y = np.concatenate(([-0.0001],distCDF_y,[1.0001]))
+        #print("distCDF: ", distCDF_y)
+        print("CDF created!")
+        
+        # Create interpolation object
+        cdfInterp = interp1d(distCDF_x,distCDF_y,fill_value=(0,1),bounds_error=False)
+        #print("size: ", np.size(distCDF_y))
+        print("Interp object created!")
+        dataScaled = cdfInterp(cdf_data)
+        weights_plot = cdf_weights
+        print("all data interpolated!")
+
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(dataScaled, bins=100, range=(-0.0001,1.0001), weights=weights_plot, histtype='step', stacked=True, fill=False)
+        axs.set_xlabel('Uniform output')
+        plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+        plt.savefig(exp_folder+'Uniform_output.png')
+        
+        bkgScaled = cdfInterp(background_output)
+        sigScaled = cdfInterp(signal_output)
+        print("sig/bkg data interpolated!")
+        searchScaled = cdfInterp(search_output)
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(signal_output, bins=100, range=(-0.0001,1.0001),weights=signal_weights,color='b',label='Signal',density=True,histtype='step',stacked=True,fill=False)
+        axs.hist(background_output, bins=100, range=(-0.0001,1.0001),weights=background_weights,color='r',label='Background',density=True,histtype='step',stacked=True,fill=False)
+        axs.set_xlabel('NN output')
+        plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+        plt.legend()
+        plt.savefig(exp_folder+'nn_output.png')
+        
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(signal_output, bins=100, weights=signal_weights,color='b',label='Signal',density=True,histtype='step',stacked=True,fill=False)
+        axs.set_xlabel('NN output')
+        axs.set_yscale('log')
+        plt.title('{}GeV WIMP Signal Net Output'.format(mass))
+        plt.legend()
+        plt.savefig(exp_folder+'signal_nn_output.png')
+
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(background_output, bins=100, weights=background_weights,color='r',label='Background',density=True,histtype='step',stacked=True,fill=False)
+        axs.set_xlabel('NN output')
+        axs.set_yscale('log')
+        plt.title('{}GeV WIMP Background Net Output'.format(mass))
+        plt.legend()
+        plt.savefig(exp_folder+'background_nn_output.png')
+
+
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(sigScaled, bins=100, range=(-0.0001,1.0001), weights=signal_weights, color='b',label='Signal',density=True, histtype='step', stacked=True, fill=False)
+        axs.hist(bkgScaled, bins=100, range=(-0.0001,1.0001), weights=background_weights, color='r',label='Background',density=True, histtype='step', stacked=True, fill=False)
+        axs.hist(searchScaled, bins=100, range=(-0.0001,1.0001), color='k',label='WS data',density=True, histtype='step', stacked=True, fill=False)
+        axs.set_xlabel('Uniform output')
+        plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+        plt.legend()
+        plt.savefig(exp_folder+'Uniform_separate_output.png')
+
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(sigScaled, bins=100, range=(-0.0001,1.0001), weights=signal_weights, color='b',label='Signal',density=True, histtype='step', stacked=True, fill=False)
+        axs.hist(bkgScaled, bins=100, range=(-0.0001,1.0001), weights=background_weights, color='r',label='Background',density=True, histtype='step', stacked=True, fill=False)
+        axs.hist(searchScaled, bins=100, range=(-0.0001,1.0001), color='k',label='WS data',density=True, histtype='step', stacked=True, fill=False)
+        axs.set_xlabel('Uniform output (log)')
+        axs.set_yscale('log')
+        plt.legend()
+        plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+        plt.savefig(exp_folder+'Uniform_separate_output_log.png')
+        
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(sigScaled, bins=100, range=(-0.0001,1.0001), weights=signal_weights, color='b',label='Signal',density=True, histtype='step', stacked=True, fill=False)
+        for k in range(len(component_outputs)):
+            compScaled = cdfInterp(component_outputs[k])
+            axs.hist(compScaled, bins=100, range=(-0.0001,1.0001), weights=background_component_weights[k],label=component_names[k],density=True, histtype='step', stacked=True, fill=False)
+        axs.hist(searchScaled, bins=100, range=(-0.0001,1.0001), color='k',label='WS data',density=True, histtype='step', stacked=True, fill=False)
+        axs.set_xlabel('Uniform output')
+        axs.legend()
+        plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+        plt.savefig(exp_folder+'Uniform_component_output.png')
+
+        fig, axs = plt.subplots(figsize=(15,12))
+        axs.hist(sigScaled, bins=100, range=(-0.0001,1.0001), weights=signal_weights, color='b',label='Signal',density=True, histtype='step', stacked=True, fill=False)
+        for k in range(len(component_outputs)):
+            compScaled = cdfInterp(component_outputs[k])
+            axs.hist(compScaled, bins=100, range=(-0.0001,1.0001), weights=background_component_weights[k],label=component_names[k],density=True, histtype='step', stacked=True, fill=False)
+        axs.hist(searchScaled, bins=100, range=(-0.0001,1.0001), color='k',label='WS data',density=True, histtype='step', stacked=True, fill=False)
+        axs.set_xlabel('Uniform output')
+        axs.set_yscale('log')
+        axs.legend()
+        plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+        plt.savefig(exp_folder+'Uniform_component_output_log.png')
+
+
+        # Store the data needed for the interpolation function in a simple text file
+        interp_data = np.vstack((distCDF_x, distCDF_y))
+        interp_fname = exp_folder+transform+'_interp.txt'
+        np.savetxt(interp_fname,interp_data)
+
+    #----------------------------------------------------------------------------------------------------------------------
+    # construct signal output tree
+    #----------------------------------------------------------------------------------------------------------------------    
+    signal_outfile = uproot.recreate(exp_folder+signal_output_file)
+    outtreename = 'summary'
+    signal_branch_dict = {}
+    for input_name in input_names:
+        signal_branch_dict[input_name] = np.float64
+    # setup output variables
+    #output_name = 'ML_out_1'
+    signal_branch_dict[output_name] = np.float64
+    signal_branch_dict[output_name+'_raw'] = np.float64
+    signal_data_dict[output_name+'_raw'] = np.float64
+    signal_outfile[outtreename] = uproot.newtree(signal_branch_dict)
+    signal_tree_output = signal_outfile[outtreename]
+    
+    if make_output_uniform:
+        # Load in the interpolation function and apply the transformation
+        interp_data = np.loadtxt(interp_fname)
+        cdfInterp = interp1d(interp_data[0,:],interp_data[1,:],fill_value=(0,1),bounds_error=False)
+        signal_output = cdfInterp(signal_output)
+    if np.size(signal_output) == np.size(signal_data_dict[input_names[0]]): 
+        print('Adding ',np.size(signal_output),' entries to data dictionary, branch name ',output_name)
+        signal_data_dict[output_name] = signal_output
+        signal_data_dict[output_name+'_raw'] = signal_output_raw
+    else:
+        print('Number of output entries does not match number of inputs! Not saving results.')
+    print("Writing output to file '{}'".format(signal_output_file))
+    signal_tree_output.extend(signal_data_dict)
+    #----------------------------------------------------------------------------------------------------------------------
+    # construct background output tree
+    #----------------------------------------------------------------------------------------------------------------------    
+    background_outfile = uproot.recreate(exp_folder+background_output_file)
+    outtreename = 'summary'
+    background_branch_dict = {}
+    for input_name in input_names:
+        background_branch_dict[input_name] = np.float64
+    # setup output variables
+    #output_name = 'ML_out_1'
+    background_branch_dict[output_name] = np.float64
+    background_branch_dict[output_name+'_raw'] = np.float64
+    background_data_dict[output_name+'_raw'] = np.float64
+
+    background_outfile[outtreename] = uproot.newtree(background_branch_dict)
+    background_tree_output = background_outfile[outtreename]
+    
+    if make_output_uniform:
+        # Load in the interpolation function and apply the transformation
+        interp_data = np.loadtxt(interp_fname)
+        cdfInterp = interp1d(interp_data[0,:],interp_data[1,:],fill_value=(0,1),bounds_error=False)
+        background_output = cdfInterp(background_output)
+    if np.size(background_output) == np.size(background_data_dict[input_names[0]]): 
+        print('Adding ',np.size(background_output),' entries to data dictionary, branch name ',output_name)
+        background_data_dict[output_name] = background_output
+        background_data_dict[output_name+'_raw'] = background_output_raw
+    else:
+        print('Number of output entries does not match number of inputs! Not saving results.')
+    print("Writing output to file '{}'".format(background_output_file))
+    background_tree_output.extend(background_data_dict)
+    #--------------------------------------------------------------------------------------------------------------------
+    # construct search data output tree
+    #--------------------------------------------------------------------------------------------------------------------
+    search_data_outfile = uproot.recreate(exp_folder+search_data_output_file)
+    outtreename = 'summary'
+    search_data_branch_dict = {}
+    for input_name in input_names:
+        search_data_branch_dict[input_name] = np.float64
+    search_data_branch_dict[output_name] = np.float64
+    search_data_branch_dict[output_name+'_raw'] = np.float64
+    search_data_dict[output_name+'_raw'] = np.float64
+
+    search_data_outfile[outtreename] = uproot.newtree(search_data_branch_dict)
+    search_data_tree_output = search_data_outfile[outtreename]
+
+    if make_output_uniform:
+        interp_data = np.loadtxt(interp_fname)
+        cdfInterp = interp1d(interp_data[0,:],interp_data[1,:],fill_value=(0,1),bounds_error=False)
+        search_data_output = cdfInterp(search_output)
+    if np.size(search_data_output) == np.size(search_data_dict[input_names[0]]):
+        print('Adding ',np.size(search_data_output),' entries to data dictionary, branch name ',output_name)
+        search_data_dict[output_name] = search_data_output
+        search_data_dict[output_name+'_raw'] = search_output_raw
+    else:
+        print('Number of output entries does not match number of inputs! Not saving results.')
+    print("Writing output to file '{}'".format(search_data_output_file))
+    search_data_tree_output.extend(search_data_dict)
+    #--------------------------------------------------------------------------------------------------------------------
+    # construct individual background files
+    #--------------------------------------------------------------------------------------------------------------------
+    for k in range(len(component_outputs)):
+        temp_outfile = uproot.recreate(exp_folder+background_files_output[k])
+        outtreename = 'summary'
+        temp_branch_dict = {}
+        for input_name in input_names:
+            temp_branch_dict[input_name] = np.float64
+        temp_branch_dict[output_name] = np.float64
+        temp_branch_dict[output_name+'_raw'] = np.float64
+        background_component_dicts[k][output_name+'_raw'] = np.float64
+        temp_outfile[outtreename] = uproot.newtree(temp_branch_dict)
+        temp_tree = temp_outfile[outtreename]
+
+        if make_output_uniform:
+            interp_data = np.loadtxt(interp_fname)
+            cdfInterp = interp1d(interp_data[0,:],interp_data[1,:],fill_value=(0,1),bounds_error=False)
+            component_output = cdfInterp(component_outputs[k])
+            print(len(component_output),np.size(component_output),np.size(background_component_dicts[k][input_names[0]]))
+        if np.size(component_output) == np.size(background_component_dicts[k][input_names[0]]):
+            print('Adding ',np.size(component_output),' entries to data dictionary, branch name ',output_name)
+            background_component_dicts[k][output_name] = component_output
+            background_component_dicts[k][output_name+'_raw'] = component_outputs_raw[k]
+        else:
+            print('Number of output entries does not match number of inputs! Not saving results.')
+        print("Writing output to file '{}'".format(background_files_output[k]))
+        temp_tree.extend(background_component_dicts[k])
+#---------------------------------------------------------------------------------------------------------------
