@@ -10,7 +10,7 @@ To use the code in this repository, simply install it using pip.
 ```bash
 git clone https://github.com/luxdarkmatter/MachineLearningPublic
 cd MachineLearningPublic
-pip install .
+pip install -r requirements.txt .
 ```
 
 This will make the package *lux_ml* available in python, which has a few subpackages:
