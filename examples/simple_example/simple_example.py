@@ -7,7 +7,7 @@
 """
 from lux_ml.mlp import MLP
 from lux_ml.utils import generate_binary_training_testing_data, convert_root_to_npz
-from lux_ml.subsets_mi import apply_ML_transform
+from lux_ml.subsets_mi import find_ML_transform, apply_ML_transform
 
 
 if __name__ == "__main__":
@@ -69,4 +69,33 @@ if __name__ == "__main__":
         'results.csv',
         data[0][:10],
         test_results
+    )
+
+    # make a uniform ML transformation
+    # from the model
+    find_ML_transform(
+        exp_folder = "uniform_output/",
+        signal = '../../data/CH3TData.npz',
+        background = '../../data/DDData.npz',
+        background_files=[],
+        filetype='npz',
+        treename='nest',
+        input_names=['x_cm','y_cm','s1Area_phd','s2Area_phd'],
+        model_file='model_after.csv',
+        weighted=False,
+        mass=0,
+
+    )
+    apply_ML_transform(
+        exp_folder = "uniform_output/",
+        filename = '../../data/CH3TData.npz',
+        filetype='npz',
+        treename='nest',
+        input_names=['x_cm','y_cm','s1Area_phd','s2Area_phd'],
+        output_name='ML_output',
+        output_file='uniform.root',
+        model_file='model_after.csv',
+        weighted=False,
+        make_output_uniform=True,
+        interp_fname_label="uniform_output/Uniform_interp.txt"
     )

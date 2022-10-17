@@ -736,6 +736,405 @@ def generate_model(
     #    file.write(output_txt)   
 #---------------------------------------------------------------------------------------------------------------
 
+def find_ML_transform(
+    exp_folder: str,                 # folder to store the results
+    signal: str,                     # input file for signal (either root or npz)
+    background: str,                 # input file for background (either root or npz)
+    background_files: List[str],     # input files for separate background components
+    filetype: str='ROOT',            # filetype (either 'ROOT' or 'npz')
+    treename: str='summary',         # name of the TTree if ROOT format
+    input_names: List[str]=[''],     # names of the variables to be used
+    swap_order: List[int]=[],        # order to put the variables in if network takes different order
+    weighted: bool='False',          # whether their is a weight variable in the ROOT file
+    model_file: str='',              # location of the model file
+    mass: str=''                     # mass of the signal
+):
+    make_folder(exp_folder)
+    if len(swap_order) == 0:
+        swap_order = [i for i in range(len(input_names))]
+    signal_data_dict = {}
+    # if weighted, append 'weight' to the input names
+    if weighted:
+        input_names.append('weight')
+    # Import the data
+    if filetype == 'ROOT':
+        rootfile = uproot.open(signal)
+        # Extract variables
+        for input_name in input_names:
+            signal_data_dict[input_name] = rootfile[treename][input_name].array()
+    elif filetype == 'npz':
+        data = np.load(signal)['arr_0']
+        # Extract variables
+        print(input_names)
+        for ii, input_name in enumerate(input_names):
+            signal_data_dict[input_name] = data[:,ii]
+    else:
+        print("Invalid filetype!")
+        return
+    signal_weight=[]
+    signal_test = []
+    for j in range(len(signal_data_dict[input_names[0]])):
+        point = [signal_data_dict[input_name][j] for input_name in input_names]
+        point_ordered = [point[j] for j in swap_order] # to account for the order of vars from the network not matching the order in the input_names list
+        signal_test.append(point_ordered)
+        if weighted:
+            signal_weight.append(signal_data_dict['weight'][j])
+    signal_answers=[[1]]*len(signal_test) # +1 for sig, -1 for bkg
+    #----------------------------------------------------------------------------------------------------------------------
+    # collect background data
+    #----------------------------------------------------------------------------------------------------------------------
+    background_data_dict = {}
+    # if weighted, append 'weight' to the input names 
+    # Import the data
+    if filetype == 'ROOT':
+        rootfile = uproot.open(background)
+        # Extract variables
+        for input_name in input_names:
+            background_data_dict[input_name] = rootfile[treename][input_name].array()
+    elif filetype == 'npz':
+        data = np.load(background)['arr_0']
+        # Extract variables
+        print(input_names)
+        for ii, input_name in enumerate(input_names):
+            background_data_dict[input_name] = data[:,ii]
+    else:
+        print("Invalid filetype!")
+        return
+    # Put data in desired format
+    background_test=[]
+    background_weight=[]
+    for j in range(len(background_data_dict[input_names[0]])):
+        point = [background_data_dict[input_name][j] for input_name in input_names]
+        point_ordered = [point[j] for j in swap_order] # to account for the order of vars from the network not matching the order in the input_names list
+        background_test.append(point_ordered)
+        if weighted:
+            background_weight.append(background_data_dict['weight'][j])
+    # testing data should NOT be normalized (evaluate() does the normalization)
+    # testing answer is only relevant if score_output=True; just assume background
+    background_answers=[[-1]]*len(background_test) # +1 for sig, -1 for bkg
+    #----------------------------------------------------------------------------------------------------------------------
+    # collect individual background components
+    #----------------------------------------------------------------------------------------------------------------------
+    background_component_data_test = []
+    background_component_answers = []
+    background_component_dicts = []
+    background_component_weights = []
+    for temp_file in background_files:
+        temp_data_dict = {}
+        temp_weights = []
+        rootfile = uproot.open(temp_file)
+        for input_name in input_names:
+            temp_data_dict[input_name] = rootfile[treename][input_name].array()
+        background_component_dicts.append(temp_data_dict)
+        temp_data_test = []
+        for j in range(len(temp_data_dict[input_names[0]])):
+            point = [temp_data_dict[input_name][j] for input_name in input_names]
+            point_ordered = [point[j] for j in swap_order]
+            temp_data_test.append(point_ordered)
+            if weighted:
+                temp_weights.append(temp_data_dict['weight'][j])
+        background_component_weights.append(temp_weights)
+        print("Done loading in data from '{0}' with {1} events".format(temp_file,len(temp_data_test)))
+        background_component_data_test.append(temp_data_test)
+        temp_answers = [[-1]]*len(temp_data_test)
+        background_component_answers.append(temp_answers)
+    #----------------------------------------------------------------------------------------------------------------------   
+    data_test = np.concatenate((signal_test,background_test))
+    answer = np.concatenate((signal_answers,background_answers))
+    
+    # apply normalization
+    print("Normalizing input data")
+    means = np.mean(data_test,axis=0)
+    stds = np.std(data_test,axis=0)
+    print("    Norm params:  mean,    std dev")
+    for l in range(len(means)):
+        print("      var %s):    %s,  %s" % (l,means[l],stds[l]))
+    data_test = (data_test - means)/stds
+    for k in range(len(background_component_data_test)):
+        background_component_data_test[k] = (background_component_data_test[k] - means)/stds
+    # Note: data_dict is already in the desired format for uproot! (branch name matches input name)
+    mlp = MLP(filename=model_file) # load model directly from file
+    print("Successfully loaded model from file '{}'.".format(model_file))
+    # Now apply this network to the data
+    output=np.array(mlp.evaluate(data_test, testing_answer=answer, score_output=False)) # testing answer is only relevant if score_output=True
+    signal_output = [output[i][0] for i in range(len(output)) if answer[i]==1]
+    background_output = [output[i][0] for i in range(len(output)) if answer[i]!=1]
+    output = [output[i][0] for i in range(len(output))]
+    component_outputs = []
+    for k in range(len(background_component_data_test)):
+        temp_output = np.array(mlp.evaluate(background_component_data_test[k],testing_answer=background_component_answers[k],score_output=False))
+        component_outputs.append([temp_output[i][0] for i in range(len(temp_output))])
+        print("Added {}th-component {} with {} events".format(k,background_files[k],len(component_outputs[-1])))
+    # build histogram outputs
+    print("Number of background components: {}".format(len(component_outputs)))
+    for k in range(len(component_outputs)):
+        print("Background component {} output example:".format(background_files[k]))
+        print(component_outputs[k][:5])
+    print("Normalizing output...")
+    output_min = min(output)
+    output_max = max(output)
+    print("Min: {}, Max: {}, Scale: {}".format(output_min,output_max,output_max-output_min))
+    scale = output_max-output_min
+    output = [(output[i]-output_min)/scale for i in range(len(output))]
+    signal_output = [(signal_output[i]-output_min)/scale for i in range(len(signal_output))]
+    background_output = [(background_output[i]-output_min)/scale for i in range(len(background_output))]
+    component_outputs = [[(component_outputs[k][i]-output_min)/scale for i in range(len(component_outputs[k]))] for k in range(len(component_outputs))]
+    print("Output normalized.")
+    # Optional: transform output so that data that's 1/2 bkg, 1/2 sig is uniform in [0,1]
+    # requires text files of the CDF for 1/2 bkg, 1/2 sig for each NN output (created by GetMLTransformation.ipynb)
+    import matplotlib
+    matplotlib.rcParams.update({'font.size': 18})
+    transform = 'Uniform'
+    if weighted:
+        signal_weights = np.asarray(signal_weight)
+        background_weights = np.asarray(background_weight)
+    n_signal = len(signal_test)
+    n_background = len(background_test)
+    if weighted:
+        signal_weights = signal_weights/(2*np.sum(signal_weights))
+        background_weights = background_weights/(2*np.sum(background_weights))
+        background_component_weights = [background_component_weights[k]/(2*np.sum(background_weights)) for k in range(len(background_component_weights))]
+    else:
+        background_weights = np.ones(n_background)/(2*n_background)
+        signal_weights = np.ones(n_signal)/(2*n_signal)
+        background_component_weights = [np.ones(len(component_outputs[k]))/(2*n_background) for k in range(len(component_outputs))]
+    weights = np.concatenate((signal_weights,background_weights))
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(signal_weights,bins=100,color='b',label='Signal',density=True,histtype='step',stacked=True,fill=False)
+    axs.set_xlabel('weights')
+    axs.set_yscale('log')
+    plt.title('{}GeV WIMP Signal Weights'.format(mass))
+    plt.legend()
+    plt.savefig(exp_folder+'signal_weights.png')
+    
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(background_weights,bins=100,color='r',label='Background',density=True,histtype='step',stacked=True,fill=False)
+    axs.set_xlabel('weights')
+    axs.set_yscale('log')
+    plt.title('{}GeV WIMP Background Weights'.format(mass))
+    plt.legend()
+    plt.savefig(exp_folder+'background_weights.png')
+
+    cdf_data = np.copy(output)
+    cdf_weights = np.copy(weights)
+    print("Creating uniform output...")
+    # Sort by NN value, to turn into a CDF
+    sort_ind = np.argsort(cdf_data)
+    cdf_data = cdf_data[sort_ind]
+    cdf_weights = cdf_weights[sort_ind]
+    print("sorted!")
+    # Get CDF by adding weights, after sorting
+    xx = cdf_data
+    distCDF_y = np.cumsum(cdf_weights)
+    distCDF_y = distCDF_y/distCDF_y[-1] # ensure normalization
+    #print(distCDF_y[:10])
+    # Sample CDF data only at ~n_interp points
+    n_pts = np.size(distCDF_y)
+    n_interp = n_pts # Should be somewhat larger than the desired final number of bins
+    interp_ind = np.arange(0,n_pts,int(n_pts/n_interp))
+    xx = xx[interp_ind]
+    distCDF_y = distCDF_y[interp_ind]
+    
+    # Add values just below and above range, to ensure any value in the valid range can be interpolated at
+    xx = np.concatenate(([-0.0001],xx,[1.0001]))
+    distCDF_x = xx
+    distCDF_y = np.concatenate(([-0.0001],distCDF_y,[1.0001]))
+    #print("distCDF: ", distCDF_y)
+    print("CDF created!")
+    
+    # Create interpolation object
+    cdfInterp = interp1d(distCDF_x,distCDF_y,fill_value=(0,1),bounds_error=False)
+    #print("size: ", np.size(distCDF_y))
+    print("Interp object created!")
+    dataScaled = cdfInterp(cdf_data)
+    weights_plot = cdf_weights
+    print("all data interpolated!")
+
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(dataScaled, bins=100, range=(-0.0001,1.0001), weights=weights_plot, histtype='step', stacked=True, fill=False)
+    axs.set_xlabel('Uniform output')
+    plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+    plt.savefig(exp_folder+'Uniform_output.png')
+    
+    bkgScaled = cdfInterp(background_output)
+    sigScaled = cdfInterp(signal_output)
+    print("sig/bkg data interpolated!")
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(signal_output, bins=100, range=(-0.0001,1.0001),weights=signal_weights,color='b',label='Signal',density=True,histtype='step',stacked=True,fill=False)
+    axs.hist(background_output, bins=100, range=(-0.0001,1.0001),weights=background_weights,color='r',label='Background',density=True,histtype='step',stacked=True,fill=False)
+    axs.set_xlabel('NN output')
+    plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+    plt.legend()
+    plt.savefig(exp_folder+'nn_output.png')
+    
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(signal_output, bins=100, weights=signal_weights,color='b',label='Signal',density=True,histtype='step',stacked=True,fill=False)
+    axs.set_xlabel('NN output')
+    axs.set_yscale('log')
+    plt.title('{}GeV WIMP Signal Net Output'.format(mass))
+    plt.legend()
+    plt.savefig(exp_folder+'signal_nn_output.png')
+
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(background_output, bins=100, weights=background_weights,color='r',label='Background',density=True,histtype='step',stacked=True,fill=False)
+    axs.set_xlabel('NN output')
+    axs.set_yscale('log')
+    plt.title('{}GeV WIMP Background Net Output'.format(mass))
+    plt.legend()
+    plt.savefig(exp_folder+'background_nn_output.png')
+
+
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(sigScaled, bins=100, range=(-0.0001,1.0001), weights=signal_weights, color='b',label='Signal',density=True, histtype='step', stacked=True, fill=False)
+    axs.hist(bkgScaled, bins=100, range=(-0.0001,1.0001), weights=background_weights, color='r',label='Background',density=True, histtype='step', stacked=True, fill=False)
+    axs.set_xlabel('Uniform output')
+    plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+    plt.legend()
+    plt.savefig(exp_folder+'Uniform_separate_output.png')
+
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(sigScaled, bins=100, range=(-0.0001,1.0001), weights=signal_weights, color='b',label='Signal',density=True, histtype='step', stacked=True, fill=False)
+    axs.hist(bkgScaled, bins=100, range=(-0.0001,1.0001), weights=background_weights, color='r',label='Background',density=True, histtype='step', stacked=True, fill=False)
+    axs.set_xlabel('Uniform output (log)')
+    axs.set_yscale('log')
+    plt.legend()
+    plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+    plt.savefig(exp_folder+'Uniform_separate_output_log.png')
+    
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(sigScaled, bins=100, range=(-0.0001,1.0001), weights=signal_weights, color='b',label='Signal',density=True, histtype='step', stacked=True, fill=False)
+    for k in range(len(component_outputs)):
+        compScaled = cdfInterp(component_outputs[k])
+        axs.hist(compScaled, bins=100, range=(-0.0001,1.0001), weights=background_component_weights[k],label=component_names[k],density=True, histtype='step', stacked=True, fill=False)
+    axs.set_xlabel('Uniform output')
+    axs.legend()
+    plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+    plt.savefig(exp_folder+'Uniform_component_output.png')
+
+    fig, axs = plt.subplots(figsize=(15,12))
+    axs.hist(sigScaled, bins=100, range=(-0.0001,1.0001), weights=signal_weights, color='b',label='Signal',density=True, histtype='step', stacked=True, fill=False)
+    for k in range(len(component_outputs)):
+        compScaled = cdfInterp(component_outputs[k])
+        axs.hist(compScaled, bins=100, range=(-0.0001,1.0001), weights=background_component_weights[k],label=component_names[k],density=True, histtype='step', stacked=True, fill=False)
+    axs.set_xlabel('Uniform output')
+    axs.set_yscale('log')
+    axs.legend()
+    plt.title('{}GeV WIMP Signal/Background Net Output'.format(mass))
+    plt.savefig(exp_folder+'Uniform_component_output_log.png')
+
+
+    # Store the data needed for the interpolation function in a simple text file
+    interp_data = np.vstack((distCDF_x, distCDF_y))
+    interp_fname = exp_folder+transform+'_interp.txt'
+    np.savetxt(interp_fname,interp_data)
+
+
+#---------------------------------------------------------------------------------------------------------------
+# function for applying neural network transformation from a model
+# and saving it in a root file
+#---------------------------------------------------------------------------------------------------------------
+def apply_ML_transform(
+    exp_folder: str,                 # folder to store the results
+    filename: str,                   # input file (either root or npz)
+    filetype: str='ROOT',            # filetype (either 'ROOT' or 'npz')
+    treename: str='summary',         # name of the TTree if ROOT format
+    input_names: List[str]=[''],     # names of the variables to be used
+    output_name: str='',             # name of the output variable to be used
+    swap_order: List[int]=[],        # order to put the variables in if network takes different order
+    weighted: bool='False',          # whether their is a weight variable in the ROOT file
+    model_file: str='',              # location of the model file
+    output_file: str='',             # where you want the output to go,
+    make_output_uniform: bool=False, # whether to turn the output info uniform from 1/2 sig and 1/2 bkg
+    interp_fname_label: str=''       # file name for uniform transformation
+) -> None:
+    assert (filetype == 'ROOT' or filetype == 'npz'), print("Invalid filetype! Must be either 'ROOT' or 'npz'.")
+    assert ('weight' not in input_names), print("Please do not include 'weight' in input_names! Mark 'weighted' as True instead!")
+    if len(swap_order) == 0:
+        swap_order = [i for i in range(len(input_names))]
+        
+    data_dict = {}
+    # if weighted, append 'weight' to the input names
+    if weighted:
+        input_names.append('weight')
+    # Import the data
+    if filetype == 'ROOT':
+        rootfile = uproot.open(filename)
+        # Extract variables
+        for input_name in input_names:
+            data_dict[input_name] = rootfile[treename][input_name].array()
+    elif filetype == 'npz':
+        data = np.load(filename)['arr_0']
+        # Extract variables
+        for ii, input_name in enumerate(input_names):
+            data_dict[input_name] = data[:,ii]
+    else:
+        print("Invalid filetype!")
+        raise
+    # Put data in desired format
+    data_test=[]
+    for j in range(len(data_dict[input_names[0]])):
+        point = [data_dict[input_name][j] for input_name in input_names]
+        point_ordered = [point[j] for j in swap_order] # to account for the order of vars from the network not matching the order in the input_names list
+        data_test.append(point_ordered)
+    # testing data should NOT be normalized (evaluate() does the normalization)
+    # testing answer is only relevant if score_output=True; just assume background
+    answers=[[-1]]*len(data_test) # +1 for sig, -1 for bkg
+    print("Done loading in data from '{0}' with {1} events".format(filename,len(data_test)))
+    
+    # create the output root file
+    make_folder(exp_folder)
+    outfile = uproot.recreate(exp_folder+output_file)
+    outtreename = treename
+    branch_dict = {}
+    for input_name in input_names:
+        branch_dict[input_name] = np.float64
+    # setup output variables
+    #output_name = 'ML_out_1'
+    branch_dict[output_name] = np.float64
+    # apply normalization
+    print("Normalizing input data")
+    means = np.mean(data_test,axis=0)
+    stds = np.std(data_test,axis=0)
+    print("    Norm params:  mean,    std dev")
+    for l in range(len(means)):
+        print("      var %s):    %s,  %s" % (l,means[l],stds[l]))
+    data_test = (data_test - means)/stds
+    # Note: data_dict is already in the desired format for uproot! (branch name matches input name)
+    mlp = MLP(filename=model_file) # load model directly from file
+    print("Successfully loaded model from file '{}'.".format(model_file))
+    # Now apply this network to the data
+    output=np.array(mlp.evaluate(data_test, testing_answer=answers, score_output=False))[:,0] # testing answer is only relevant if score_output=True
+    output = output.flatten().astype(np.float) # Convert to a 1D array
+    print("Normalizing output...")
+    output_min = min(output)
+    output_max = max(output)
+    print("Min: {}, Max: {}, Scale: {}".format(output_min,output_max,output_max-output_min))
+    scale = output_max-output_min
+    output = [(output[i]-output_min)/scale for i in range(len(output))]
+    print("Applied model transformation.")
+    # Optional: transform output so that data that's 1/2 bkg, 1/2 sig is uniform in [0,1]
+    # requires text files of the CDF for 1/2 bkg, 1/2 sig for each NN output (created by GetMLTransformation.ipynb)
+    if make_output_uniform:
+        # Load in the interpolation function and apply the transformation
+        interp_data = np.loadtxt(interp_fname_label)
+        cdfInterp = interp1d(interp_data[0,:],interp_data[1,:],fill_value=(0,1),bounds_error=False)
+        output = cdfInterp(output)
+
+    if np.size(output) == np.size(data_dict[input_names[0]]): 
+        print('Adding ',np.size(output),' entries to data dictionary, branch name ',output_name)
+        data_dict[output_name] = output
+    else:
+        print('Number of output entries does not match number of inputs! Not saving results.')
+    print("Writing output to file '{}'".format(output_file))
+    outfile[outtreename] = data_dict
+    fig, axs = plt.subplots()
+    axs.hist(output,bins=100,color='k')
+    axs.set_xlabel(output_name)
+    axs.set_title(output_file)
+    plt.savefig(exp_folder + output_file+".png")
+    print("Finished")
+#---------------------------------------------------------------------------------------------------------------
+
 #---------------------------------------------------------------------------------------------------------------
 # function for applying neural network transformation from a model
 # and saving it in a root file
