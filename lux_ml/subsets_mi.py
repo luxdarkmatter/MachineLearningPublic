@@ -17,9 +17,13 @@ import time
 from sklearn.utils import shuffle as shuffle2
 
 import bisect
+import uproot
 from random import shuffle
 import h5py
 from typing import List
+from scipy.interpolate import interp1d
+from shutil import copyfile
+from matplotlib import pyplot as plt
 
 from lux_ml.mlp import MLP
 from lux_ml.utils import generate_binary_training_testing_data
@@ -938,6 +942,7 @@ def apply_ML_transform_all(
     # requires text files of the CDF for 1/2 bkg, 1/2 sig for each NN output (created by GetMLTransformation.ipynb)
     import matplotlib
     matplotlib.rcParams.update({'font.size': 18})
+
     if make_output_uniform:
         transform = 'Uniform' #'Gaussian'
         if weighted:
@@ -1103,8 +1108,6 @@ def apply_ML_transform_all(
     signal_branch_dict[output_name] = np.float64
     signal_branch_dict[output_name+'_raw'] = np.float64
     signal_data_dict[output_name+'_raw'] = np.float64
-    signal_outfile[outtreename] = uproot.newtree(signal_branch_dict)
-    signal_tree_output = signal_outfile[outtreename]
     
     if make_output_uniform:
         # Load in the interpolation function and apply the transformation
@@ -1118,7 +1121,7 @@ def apply_ML_transform_all(
     else:
         print('Number of output entries does not match number of inputs! Not saving results.')
     print("Writing output to file '{}'".format(signal_output_file))
-    signal_tree_output.extend(signal_data_dict)
+    signal_outfile[outtreename].extend(signal_data_dict)
     #----------------------------------------------------------------------------------------------------------------------
     # construct background output tree
     #----------------------------------------------------------------------------------------------------------------------    

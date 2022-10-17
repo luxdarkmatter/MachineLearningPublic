@@ -7,6 +7,7 @@
 """
 from lux_ml.mlp import MLP
 from lux_ml.utils import generate_binary_training_testing_data, convert_root_to_npz
+from lux_ml.subsets_mi import apply_ML_transform
 
 
 if __name__ == "__main__":
