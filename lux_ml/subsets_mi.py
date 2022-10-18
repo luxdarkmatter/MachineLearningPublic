@@ -736,7 +736,12 @@ def generate_model(
     #    file.write(output_txt)   
 #---------------------------------------------------------------------------------------------------------------
 
-def find_ML_transform(
+#---------------------------------------------------------------------------------------------------------------
+# Function for calculating the transform to go from the output of a trained network model to a space which is 
+# uniformly distributed in [0,1] when applied to 1/2 signal, 1/2 background data 
+# The data needed for the interpolating uniform transform function is stored in a simple text file for later use
+#---------------------------------------------------------------------------------------------------------------
+def find_uniform_transform(
     exp_folder: str,                 # folder to store the results
     signal: str,                     # input file for signal (either root or npz)
     background: str,                 # input file for background (either root or npz)
@@ -880,8 +885,9 @@ def find_ML_transform(
     background_output = [(background_output[i]-output_min)/scale for i in range(len(background_output))]
     component_outputs = [[(component_outputs[k][i]-output_min)/scale for i in range(len(component_outputs[k]))] for k in range(len(component_outputs))]
     print("Output normalized.")
-    # Optional: transform output so that data that's 1/2 bkg, 1/2 sig is uniform in [0,1]
-    # requires text files of the CDF for 1/2 bkg, 1/2 sig for each NN output (created by GetMLTransformation.ipynb)
+    
+    # Transform output so that data that's 1/2 bkg, 1/2 sig is uniform in [0,1]
+    # saves a text file of the data used to make the interpolator that defines the transform
     import matplotlib
     matplotlib.rcParams.update({'font.size': 18})
     transform = 'Uniform'
