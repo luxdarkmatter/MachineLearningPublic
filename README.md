@@ -106,9 +106,9 @@ mlp.save_results_to_file(   # save the results to file.
 ```
 
 ## Uniform ML Transformation
-To ease the PLR algorithm, we apply a uniform transformation to the neural network output so that the distribution over the output variable is uniform.  This makes it easier for the PLR to vary bin contents, since each bin has the same integral area.  To use this functionality, you need to pass both the signal file and background file, as well as the trained network parameters to the "find_ML_transform" function, which has the following arguments:
+To ease the PLR algorithm, we apply a uniform transformation to the neural network output so that the distribution over the output variable is uniform.  This makes it easier for the PLR to vary bin contents, since each bin has the same integral area.  To use this functionality, you need to pass both the signal file and background file, as well as the trained network parameters to the "find_uniform_transform" function, which has the following arguments:
 ```python
-def find_ML_transform(
+def find_uniform_transform(
     exp_folder: str,                 # folder to store the results
     signal: str,                     # input file for signal (either root or npz)
     background: str,                 # input file for background (either root or npz)
@@ -122,7 +122,7 @@ def find_ML_transform(
     mass: str=''                     # mass of the signal
 ):
 ```
-Once the uniform trannsformation parameters are found, they can be applied to any input data, provided that the data is normalized correctly for the netowrk.  This can be done with the "apply_ML_transform" function, which has the following arguments:
+After model training is done, the trained and saved model can be applied to any input data, provided that the data is normalized correctly for the network. The uniform transformation can also be optionally included in the output, if the uniform transformation parameters were found using the function above. This can be done with the "apply_ML_transform" function, which has the following arguments:
 ```python
 def apply_ML_transform(
     exp_folder: str,                 # folder to store the results
