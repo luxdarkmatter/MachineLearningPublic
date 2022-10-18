@@ -73,7 +73,7 @@ if __name__ == "__main__":
 
     # make a uniform ML transformation
     # from the model
-    find_ML_transform(
+    find_uniform_transform(
         exp_folder = "uniform_output/",
         signal = '../../data/CH3TData.npz',
         background = '../../data/DDData.npz',
